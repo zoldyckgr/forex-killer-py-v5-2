@@ -1,0 +1,7 @@
+requests
+yfinance
+pandas
+mplfinance
+pytz
+flask
+gunicorn
