@@ -1,2 +1,7 @@
+requests
+yfinance
+pandas
+flask
+gunicorn
 beautifulsoup4
 lxml
