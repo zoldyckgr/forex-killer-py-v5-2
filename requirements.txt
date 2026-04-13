@@ -1,7 +1,2 @@
-requests
-yfinance
-pandas
-mplfinance
-pytz
-flask
-gunicorn
+beautifulsoup4
+lxml
