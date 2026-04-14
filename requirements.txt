@@ -1,7 +1,6 @@
 requests
 yfinance
 pandas
-pandas_ta
 flask
 gunicorn
 beautifulsoup4
