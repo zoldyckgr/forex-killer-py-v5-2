@@ -8,7 +8,7 @@ from threading import Thread
 
 app = Flask('')
 @app.route('/')
-def home(): return "Bot V5.4 - Fresh Liquidity Only!"
+def home(): return "Bot V5.5 - Stability Fix"
 
 def run_web():
     app.run(host='0.0.0.0', port=os.getenv("PORT", 8080))
@@ -16,62 +16,71 @@ def run_web():
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
+# تخزين وقت آخر سينيال لكل زوج
+last_signal_time = {"EURUSD": 0, "GOLD": 0}
+
 def calculate_rsi(series, period=14):
+    # نسخة Wilder's المعتمدة عالمياً
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    gain = (delta.where(delta > 0, 0))
+    loss = (-delta.where(delta < 0, 0))
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    
+    # تجنب القسمة على صفر
+    rs = avg_gain / avg_loss.replace(0, 0.00001)
     return 100 - (100 / (100 + rs))
 
 def analyze_market():
+    global last_signal_time
     pairs = {"EURUSD": "EURUSD=X", "GOLD": "GC=F"}
+    
     for name, sym in pairs.items():
         try:
-            # نجيبو داتا تاع 3 أيام باش نلقاو الـ Structure
+            # فلتر الوقت: إذا جاز أقل من ساعة على آخر سينيال، ما تحللش هاد الزوج
+            if time.time() - last_signal_time[name] < 3600:
+                continue
+
             df = yf.download(sym, period="3d", interval="15m", progress=False, auto_adjust=True)
             if df.empty: continue
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
             df['RSI'] = calculate_rsi(df['Close'])
             
-            # --- تحديد السيولة "الحية" (Unmitigated) ---
-            # نحوسو على أعلى قمة وأقل قاع بشرط السعر الحالي مازال ما فاتهمش
-            
-            # السيولة العلوية (Buy Side Liquidity)
-            potential_highs = df['High'].iloc[:-10] # نحيو آخر 10 شمعات باش ما نحكموش السعر الحالي
+            # تحديد السيولة "البعيدة" عن السعر الحالي بـ 10 شمعات
+            potential_highs = df['High'].iloc[:-15]
+            potential_lows = df['Low'].iloc[:-15]
             major_high = potential_highs.max()
-            
-            # السيولة السفلية (Sell Side Liquidity)
-            potential_lows = df['Low'].iloc[:-10]
             major_low = potential_lows.min()
             
-            current_price = df['Close'].iloc[-1]
-            current_high = df['High'].iloc[-1]
-            current_low = df['Low'].iloc[-1]
-            current_rsi = df['RSI'].iloc[-1]
-
+            curr = df.iloc[-1]
+            
             setup = None
-            # منطق الـ Sweep: لازم يضرب القمة/القاع ويرجع يغلق تحتها/فوقها (Rejection)
-            # زدنا شرط أن الـ RSI يكون "Extreme" باش نضمنو الـ Eliot Wave Exhaustion
-            if current_high > major_high and current_price < major_high and current_rsi > 72:
-                setup = "💎 FRESH HIGH SWEEP (ICT + ELIOT)"
-            elif current_low < major_low and current_price > major_low and current_rsi < 28:
-                setup = "💎 FRESH LOW SWEEP (ICT + SK)"
+            # شروط قاسية للفلترة
+            if curr['High'] > major_high and curr['Close'] < major_high and 70 < curr['RSI'] < 85:
+                setup = "💎 PURE BEARISH SWEEP"
+            elif curr['Low'] < major_low and curr['Close'] > major_low and 15 < curr['RSI'] < 30:
+                setup = "💎 PURE BULLISH SWEEP"
 
             if setup:
-                msg = (f"🎯 **{name} INTACT SIGNAL**\n\n"
+                msg = (f"🎯 **{name} STABLE SIGNAL**\n\n"
                        f"🔥 Strategy: {setup}\n"
-                       f"📍 Entry: `{current_price:.5f}`\n"
-                       f"📉 RSI: `{current_rsi:.2f}`\n"
-                       f"🚀 Target: {'Opposite Liquidity'}")
-                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'})
+                       f"📍 Entry: `{curr['Close']:.5f}`\n"
+                       f"📉 RSI: `{curr['RSI']:.2f}`\n"
+                       f"⏳ Next scan in: 1 Hour")
+                
+                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                             data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'})
+                
+                last_signal_time[name] = time.time() # تحديث وقت السينيال
+
         except Exception as e:
             print(f"Error: {e}")
 
 def main_loop():
     while True:
         analyze_market()
-        time.sleep(900)
+        time.sleep(300) # يسكاني كل 5 دقائق بصح يبعت كل ساعة (بسبب الفلتر)
 
 if __name__ == "__main__":
     Thread(target=run_web).start()
