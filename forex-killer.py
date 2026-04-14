@@ -8,26 +8,25 @@ from threading import Thread
 
 app = Flask('')
 @app.route('/')
-def home(): return "Bot V5.5 - Stability Fix"
+def home(): return "Bot V5.7 - All Fixed & Precision 1:5 RR"
 
 def run_web():
-    app.run(host='0.0.0.0', port=os.getenv("PORT", 8080))
+    # سقمنا هاد السطر باش ما يصرى حتى Conflict في الـ Port
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-# تخزين وقت آخر سينيال لكل زوج
 last_signal_time = {"EURUSD": 0, "GOLD": 0}
 
 def calculate_rsi(series, period=14):
-    # نسخة Wilder's المعتمدة عالمياً
     delta = series.diff()
     gain = (delta.where(delta > 0, 0))
     loss = (-delta.where(delta < 0, 0))
+    # الطريقة الصحيحة (Wilder's Smoothing)
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
-    
-    # تجنب القسمة على صفر
     rs = avg_gain / avg_loss.replace(0, 0.00001)
     return 100 - (100 / (100 + rs))
 
@@ -37,7 +36,7 @@ def analyze_market():
     
     for name, sym in pairs.items():
         try:
-            # فلتر الوقت: إذا جاز أقل من ساعة على آخر سينيال، ما تحللش هاد الزوج
+            # فلتر ساعة بين كل سينيال وسينيال
             if time.time() - last_signal_time[name] < 3600:
                 continue
 
@@ -47,32 +46,45 @@ def analyze_market():
 
             df['RSI'] = calculate_rsi(df['Close'])
             
-            # تحديد السيولة "البعيدة" عن السعر الحالي بـ 10 شمعات
+            # سيولة الـ 48 ساعة الماضية (Fresh High/Low)
             potential_highs = df['High'].iloc[:-15]
             potential_lows = df['Low'].iloc[:-15]
             major_high = potential_highs.max()
             major_low = potential_lows.min()
             
             curr = df.iloc[-1]
-            
+            entry_price = curr['Close']
+
             setup = None
-            # شروط قاسية للفلترة
+            sl = 0
+            tp = 0
+
+            # الـ Logic تع الـ Sweep والـ 1:5 RR
             if curr['High'] > major_high and curr['Close'] < major_high and 70 < curr['RSI'] < 85:
-                setup = "💎 PURE BEARISH SWEEP"
+                setup = "🐻 BEARISH INTACT SWEEP"
+                sl = curr['High'] + (0.00015 if name == "EURUSD" else 0.8)
+                risk = sl - entry_price
+                tp = entry_price - (risk * 5)
+                
             elif curr['Low'] < major_low and curr['Close'] > major_low and 15 < curr['RSI'] < 30:
-                setup = "💎 PURE BULLISH SWEEP"
+                setup = "🐂 BULLISH INTACT SWEEP"
+                sl = curr['Low'] - (0.00015 if name == "EURUSD" else 0.8)
+                risk = entry_price - sl
+                tp = entry_price + (risk * 5)
 
             if setup:
-                msg = (f"🎯 **{name} STABLE SIGNAL**\n\n"
+                msg = (f"🎯 **{name} PRECISION SETUP**\n\n"
                        f"🔥 Strategy: {setup}\n"
-                       f"📍 Entry: `{curr['Close']:.5f}`\n"
+                       f"📍 **ENTRY: `{entry_price:.5f}`**\n"
+                       f"🛑 **SL: `{sl:.5f}`**\n"
+                       f"✅ **TP (1:5): `{tp:.5f}`**\n\n"
                        f"📉 RSI: `{curr['RSI']:.2f}`\n"
-                       f"⏳ Next scan in: 1 Hour")
+                       f"📊 Check structural rejection on 15M.")
                 
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                              data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'})
                 
-                last_signal_time[name] = time.time() # تحديث وقت السينيال
+                last_signal_time[name] = time.time()
 
         except Exception as e:
             print(f"Error: {e}")
@@ -80,7 +92,7 @@ def analyze_market():
 def main_loop():
     while True:
         analyze_market()
-        time.sleep(300) # يسكاني كل 5 دقائق بصح يبعت كل ساعة (بسبب الفلتر)
+        time.sleep(300)
 
 if __name__ == "__main__":
     Thread(target=run_web).start()
