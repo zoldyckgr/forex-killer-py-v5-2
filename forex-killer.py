@@ -1,53 +1,72 @@
+import os
+import time
+import requests
+import yfinance as yf
+import pandas as pd
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+@app.route('/')
+def home(): return "Bot V5.3 Intact & Live!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=os.getenv("PORT", 8080))
+
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (100 + rs))
+
 def analyze_market():
+    # ركزنا غير على EURUSD والذهب باش يكون دقيق
     pairs = {"EURUSD": "EURUSD=X", "GOLD": "GC=F"}
     for name, sym in pairs.items():
         try:
-            df = yf.download(sym, period="10d", interval="15m", progress=False, auto_adjust=True)
+            # نجبدو داتا تاع آخر 48 ساعة فقط (باش ما يروحش للقديم)
+            df = yf.download(sym, period="2d", interval="15m", progress=False, auto_adjust=True)
             if df.empty: continue
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
             df['RSI'] = calculate_rsi(df['Close'])
-            df = get_precision_swings(df)
+            
+            # تحديد السيولة تاع البارح (Previous Day High/Low)
+            # هادي هي السيولة اللي يحترمها الـ ICT صح
+            major_high = df['High'].iloc[:-20].max() # أعلى قمة قبل الساعات الأخيرة
+            major_low = df['Low'].iloc[:-20].min()   # أقل قاع قبل الساعات الأخيرة
+            
+            current_price = df['Close'].iloc[-1]
+            current_high = df['High'].iloc[-1]
+            current_low = df['Low'].iloc[-1]
+            current_rsi = df['RSI'].iloc[-1]
 
-            # --- البحث عن أقرب سيولة "حية" (Unmitigated) ---
-            recent_df = df.iloc[-400:] # نركزو على آخر 4 أيام تداول
-            
-            # نجبدو الـ Swings اللي مازال ما تكسروش
-            fresh_highs = []
-            fresh_lows = []
-            
-            for i in range(len(recent_df)-5):
-                if not pd.isna(recent_df['Swing_High'].iloc[i]):
-                    level = recent_df['Swing_High'].iloc[i]
-                    # نثبتو بلي حتى شمعة موراها ما طلعت فوق هاد السعر
-                    if recent_df['High'].iloc[i+1:].max() <= level:
-                        fresh_highs.append(level)
-                
-                if not pd.isna(recent_df['Swing_Low'].iloc[i]):
-                    level = recent_df['Swing_Low'].iloc[i]
-                    # نثبتو بلي حتى شمعة موراها ما هبطت تحت هاد السعر
-                    if recent_df['Low'].iloc[i+1:].min() >= level:
-                        fresh_lows.append(level)
-
-            if not fresh_highs or not fresh_lows: continue
-            
-            major_high = max(fresh_highs)
-            major_low = min(fresh_lows)
-            
-            current = df.iloc[-1]
-            
             setup = None
-            # Sweep لسيولة حية (Fresh) + RSI Extreme
-            if current['High'] > major_high and current['Close'] < major_high and current['RSI'] > 75:
-                setup = "💎 FRESH MAJOR HIGH SWEEP"
-            elif current['Low'] < major_low and current['Close'] > major_low and current['RSI'] < 25:
-                setup = "💎 FRESH MAJOR LOW SWEEP"
+            # شرط الـ Sweep: لازم يضرب قمة البارح ويرجع تحتها + RSI
+            if current_high > major_high and current_price < major_high and current_rsi > 70:
+                setup = "🐻 BEARISH SWEEP (Previous Day High)"
+            elif current_low < major_low and current_price > major_low and current_rsi < 30:
+                setup = "🐂 BULLISH SWEEP (Previous Day Low)"
 
             if setup:
-                msg = (f"🚀 **{name} INTACT SIGNAL**\n\n"
-                       f"🔥 Strategy: {setup}\n"
-                       f"📍 Entry: `{current['Close']:.5f}`\n"
-                       f"🎯 Target: `{major_low if 'HIGH' in setup else major_high:.5f}`\n"
-                       f"📊 Status: Unmitigated Level Hit!")
+                msg = (f"💎 **{name} INTACT SIGNAL**\n\n"
+                       f"🔥 Type: {setup}\n"
+                       f"📍 Entry: `{current_price:.5f}`\n"
+                       f"📉 RSI: `{current_rsi:.2f}`\n"
+                       f"🛡️ Target: {'Previous Day Low' if 'BEARISH' in setup else 'Previous Day High'}")
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'})
-        except Exception as e: print(f"Error: {e}")
+        except Exception as e:
+            print(f"Error analyzing {name}: {e}")
+
+def main_loop():
+    while True:
+        analyze_market()
+        time.sleep(900) # يسكاني كل 15 دقيقة
+
+if __name__ == "__main__":
+    Thread(target=run_web).start()
+    main_loop()
